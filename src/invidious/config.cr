@@ -194,6 +194,9 @@ class Config
 
   property videojs : VideoJSConfig = VideoJSConfig.from_yaml("")
 
+  # Optional privacy-friendly frontend redirects (Teddit/Libreddit, Nitter, Bibliogram, Wikiless, etc.)
+  property privacy_redirects : PrivacyRedirects = PrivacyRedirects.new
+
   struct VideoJSConfig
     include YAML::Serializable
     include JSON::Serializable

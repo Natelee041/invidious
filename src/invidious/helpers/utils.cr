@@ -332,8 +332,177 @@ def reduce_uri(uri : URI | String, max_length : Int32 = 50, suffix : String = "â
   return str
 end
 
+struct PrivacyRedirects
+  include YAML::Serializable
+  include JSON::Serializable
+
+  property nitter : String? = nil
+  property reddit : String? = nil
+  property bibliogram : String? = nil
+  property wikiless : String? = nil
+  property scribe : String? = nil
+  property proxitok : String? = nil
+  property rimgo : String? = nil
+  property breezewiki : String? = nil
+  property simplytranslate : String? = nil
+  property searx : String? = nil
+  property openstreetmap : String? = nil
+
+  def initialize(
+    @nitter = nil,
+    @reddit = nil,
+    @bibliogram = nil,
+    @wikiless = nil,
+    @scribe = nil,
+    @proxitok = nil,
+    @rimgo = nil,
+    @breezewiki = nil,
+    @simplytranslate = nil,
+    @searx = nil,
+    @openstreetmap = nil
+  )
+  end
+end
+
+def default_privacy_redirects : PrivacyRedirects?
+  {% if @top_level.has_constant?("CONFIG") %}
+    CONFIG.privacy_redirects
+  {% else %}
+    nil
+  {% end %}
+end
+
+private def normalize_redirect_base(instance : String) : URI
+  raw = instance.strip.rstrip('/')
+  if !raw.starts_with?("http://") && !raw.starts_with?("https://")
+    raw = "https://#{raw}"
+  end
+  URI.parse(raw)
+end
+
+private def replace_uri_origin(uri : URI, target_instance : String, extra_query : Hash(String, String)? = nil) : String
+  base = normalize_redirect_base(target_instance)
+  out = URI.new(
+    scheme: base.scheme || uri.scheme || "https",
+    host: base.host,
+    port: base.port,
+    path: uri.path.presence || "/",
+    query: uri.query,
+    fragment: uri.fragment
+  )
+  if extra_query && !extra_query.empty?
+    params = HTTP::Params.parse(out.query || "")
+    extra_query.each do |k, v|
+      params[k] = v if !params.has_key?(k)
+    end
+    out.query = params.to_s
+  end
+  out.to_s
+end
+
+def rewrite_privacy_redirect_url(raw_url : String, redirects : PrivacyRedirects? = default_privacy_redirects) : String
+  return raw_url if redirects.nil? || raw_url.empty?
+
+  begin
+    uri = URI.parse(raw_url)
+  rescue
+    return raw_url
+  end
+
+  host = uri.host.try(&.downcase)
+  return raw_url if host.nil?
+
+  # 1. Twitter / X -> Nitter
+  if (nitter = redirects.nitter.presence) &&
+     (host.in?({"twitter.com", "www.twitter.com", "mobile.twitter.com", "x.com", "www.x.com", "mobile.x.com", "pbs.twimg.com", "video.twimg.com"}))
+    if host == "pbs.twimg.com" || host == "video.twimg.com"
+      pic_uri = uri.dup
+      pic_uri.path = "/pic/#{host}#{uri.path}"
+      return replace_uri_origin(pic_uri, nitter)
+    end
+    return replace_uri_origin(uri, nitter)
+  end
+
+  # 2. Reddit -> Teddit / Libreddit / Redlib
+  if (reddit = redirects.reddit.presence) &&
+     (host == "reddit.com" || host.ends_with?(".reddit.com") || host == "redd.it" || host == "i.redd.it" || host == "preview.redd.it")
+    if host == "i.redd.it" || host == "preview.redd.it"
+      img_uri = uri.dup
+      img_uri.path = "/img#{uri.path}"
+      return replace_uri_origin(img_uri, reddit)
+    end
+    return replace_uri_origin(uri, reddit)
+  end
+
+  # 3. Instagram -> Bibliogram / Proxigram
+  if (bibliogram = redirects.bibliogram.presence) &&
+     (host == "instagram.com" || host.ends_with?(".instagram.com"))
+    ig_uri = uri.dup
+    if !ig_uri.path.starts_with?("/p/") && !ig_uri.path.starts_with?("/reel/") && !ig_uri.path.starts_with?("/tv/") && !ig_uri.path.starts_with?("/u/") && ig_uri.path != "/" && !ig_uri.path.empty?
+      ig_uri.path = "/u#{ig_uri.path}"
+    end
+    return replace_uri_origin(ig_uri, bibliogram)
+  end
+
+  # 4. Wikipedia -> Wikiless
+  if (wikiless = redirects.wikiless.presence) &&
+     (host == "wikipedia.org" || host.ends_with?(".wikipedia.org"))
+    labels = host.rchop(".wikipedia.org").split('.').reject(&.in?({"www", "m", " wikipedia.org"}))
+    lang = labels.first?
+    extra = (lang && !lang.empty? && lang != "wikipedia.org") ? {"lang" => lang} : nil
+    return replace_uri_origin(uri, wikiless, extra)
+  end
+
+  # 5. Medium -> Scribe
+  if (scribe = redirects.scribe.presence) &&
+     (host == "medium.com" || host.ends_with?(".medium.com"))
+    return replace_uri_origin(uri, scribe)
+  end
+
+  # 6. TikTok -> ProxiTok
+  if (proxitok = redirects.proxitok.presence) &&
+     (host == "tiktok.com" || host.ends_with?(".tiktok.com"))
+    return replace_uri_origin(uri, proxitok)
+  end
+
+  # 7. Imgur -> Rimgo
+  if (rimgo = redirects.rimgo.presence) &&
+     (host == "imgur.com" || host.ends_with?(".imgur.com"))
+    return replace_uri_origin(uri, rimgo)
+  end
+
+  # 8. Fandom -> BreezeWiki
+  if (breezewiki = redirects.breezewiki.presence) && host.ends_with?(".fandom.com")
+    wiki_sub = host.rchop(".fandom.com")
+    if !wiki_sub.empty? && wiki_sub != "www"
+      bw_uri = uri.dup
+      bw_uri.path = "/#{wiki_sub}#{uri.path}"
+      return replace_uri_origin(bw_uri, breezewiki)
+    end
+  end
+
+  # 9. Google Translate -> SimplyTranslate / Lingva
+  if (simplytranslate = redirects.simplytranslate.presence) && host.starts_with?("translate.google.")
+    return replace_uri_origin(uri, simplytranslate)
+  end
+
+  # 10. Google Search -> SearX / SearXNG / Whoogle
+  if (searx = redirects.searx.presence) &&
+     (host == "google.com" || host == "www.google.com") && uri.path == "/search"
+    return replace_uri_origin(uri, searx)
+  end
+
+  # 11. Google Maps -> OpenStreetMap
+  if (osm = redirects.openstreetmap.presence) &&
+     (host == "maps.google.com" || ((host == "google.com" || host == "www.google.com") && uri.path.starts_with?("/maps")))
+    return replace_uri_origin(uri, osm)
+  end
+
+  raw_url
+end
+
 # Get the html link from a NavigationEndpoint or an innertubeCommand
-def parse_link_endpoint(endpoint : JSON::Any, text : String, video_id : String)
+def parse_link_endpoint(endpoint : JSON::Any, text : String, video_id : String, redirects : PrivacyRedirects? = default_privacy_redirects)
   if url = endpoint.dig?("urlEndpoint", "url").try &.as_s
     url = URI.parse(url)
     displayed_url = text
@@ -344,11 +513,17 @@ def parse_link_endpoint(endpoint : JSON::Any, text : String, video_id : String)
       if url.path == "/redirect"
         # Sometimes, links can be corrupted (why?) so make sure to fallback
         # nicely. See https://github.com/iv-org/invidious/issues/2682
-        url = url.query_params["q"]? || ""
+        url = rewrite_privacy_redirect_url(url.query_params["q"]? || "", redirects)
         displayed_url = url
       else
         url = url.request_target
         displayed_url = "youtube.com#{url}"
+      end
+    else
+      rewritten = rewrite_privacy_redirect_url(url.to_s, redirects)
+      if rewritten != url.to_s
+        url = rewritten
+        displayed_url = rewritten
       end
     end
 
